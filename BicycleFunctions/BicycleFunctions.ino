@@ -130,31 +130,31 @@ void writeToLCD(){
         lcd.print("Speed: ");
         lcd.setCursor(8, 1);
         lcd.print(currentSpeed, 10);
-        lcd.setCursor(10, 1);
-        lcd.print(" mph");
+        //lcd.setCursor(10, 1);
+        //lcd.print(" mph");
     }
     else if(state == 1){
         lcd.setCursor(1, 1);
         lcd.print("Avg Speed: ");
         lcd.setCursor(12, 1);
         lcd.print(averageSpeed, 10);
-        lcd.setCursor(14, 1);
-        lcd.print("mph");
+        //lcd.setCursor(14, 1);
+        //lcd.print("mph");
     }
     else if(state == 2){     
         lcd.setCursor(1, 1);
         lcd.print("Distance: ");
         lcd.setCursor(11, 1);
         lcd.print(tripDistance, 10);
-        lcd.print(" mi");
+        //lcd.print(" mi");
     }
     else if(state == 3){
         lcd.setCursor(1, 1);
         lcd.print("Cadence: ");
         lcd.setCursor(10, 1);
         lcd.print(cadence, 10);
-        lcd.setCursor(13, 1);
-        lcd.print(" RPM");
+        //lcd.setCursor(13, 1);
+        //lcd.print(" RPM");
     }
     else{
         lcd.setCursor(1, 1);
