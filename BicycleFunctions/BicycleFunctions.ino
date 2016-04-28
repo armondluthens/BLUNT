@@ -1,3 +1,4 @@
+
 /*********************************************************
  * Armond Luthens
  * Charles Rathe
@@ -11,33 +12,63 @@
  * Library Imports
  *********************************************************/
 #include <LiquidCrystal.h>
-
+#include <TimerOne.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_MMA8451.h>
+#include <math.h>
+#include <Wire.h>
 
 /*********************************************************
  * Global Variables
  *********************************************************/
 float currentSpeed = 0.0;
 float averageSpeed = 0.0;
+float initialAverageSpeed = 0.0;
+float totalSpeed = 0.0;
+
+unsigned int totalSeconds = 0;
+
 float tripDistance = 0.0;
-float tripTime = 0.0;
-float currentSlope = 0.0;
+unsigned int tripSeconds = 0;
+unsigned int tripMinutes = 0;
+unsigned int tripHours = 0;
+
+int currentSlope = 0;
 unsigned int cadence = 0;
+unsigned int cadenceCount = 0;
 unsigned int pulseCount = 0;
+
+unsigned int pulseCount2 = 0;
 
 unsigned timeElapsed = 0;
 unsigned previousTime = 0;
+unsigned timeCheck = 0;
+
+unsigned int timerCount = 0;
 
 //const float wheelDiameter = 584.0; //millimeters
 const float wheelCircumference = 6.15; // measured in feet --> [(23.5/12)*pi]
 /*********************************************************
  * Reed Switch
  *********************************************************/
-const int reedSwitch = 10;
+const int reedSwitch = 2;
+
+/*********************************************************
+ * Accelerometer Global Variables
+ *********************************************************/
+Adafruit_MMA8451 mma = Adafruit_MMA8451();
 
 /*********************************************************
  * LCD
+ *  LCD RS pin to digital pin 9
+    LCD Enable pin to digital pin 8
+    LCD D4 pin to digital pin 4
+    LCD D5 pin to digital pin 5
+    LCD D6 pin to digital pin 6
+    LCD D7 pin to digital pin 7
  *********************************************************/
-LiquidCrystal lcd(13, 11, A0, A1, A2, A3);
+LiquidCrystal lcd(9, 8, 4, 5, 6, 7);
+
 
 /*********************************************************
  * State Info:
@@ -52,36 +83,72 @@ short state=0;
 /*********************************************************
  * State Change Push Button
  *********************************************************/
+const int stateButton = 3; //state push button on pin 2
 
-const int stateButton = 2; //state push button on pin 2
-const int resetButton = 3; //reset push button on pin 3
+/*********************************************************
+ * PROGRAM SETUP
+ *********************************************************/
+void setup() { 
+    Serial.begin(9600);
 
-void setup() {
-  // put your setup code here, to run once:
-  
-  pinMode(reedSwitch, INPUT);                    //Configure reed pin as an input
+    //set up timer
+    Timer1.initialize(1000000);
+    Timer1.attachInterrupt(timer_ISR);
 
-  //External Interrupt for State Change
-  pinMode(stateButton, INPUT);                //Configure state button (on pin 2) as an input
-  attachInterrupt(0, changeState, CHANGE);    //Attach interrupt to pin on change
+    
+    //set up interrupt for magnetic reed switch
+    pinMode(reedSwitch, INPUT);                    //Configure reed pin as an input
+    attachInterrupt(digitalPinToInterrupt(reedSwitch), reedSwitchISR, RISING);    //Attach interrupt to pin on change
+    
+    //External Interrupt for State Change
+    pinMode(stateButton, INPUT);                //Configure state button (on pin 2) as an input
+    attachInterrupt(1, changeState, RISING);    //Attach interrupt to pin on change
 
-  
-  //External Interrupt for Reset Button
-  pinMode(resetButton, INPUT);                 //Configure reset button (on pin 3) as an input
-  attachInterrupt(0, resetAllValues, CHANGE);  //Attach interrupt to pin on change
 
-  // Set up LCD
-  //  lcd.begin(16,2);            // Set LCD for 16 columns, 2 lines
-  //  lcd.clear();                // Clear LCD and print intro
+    //Pin change interrupt for reset all function
+    cli();              // disable global interrupts
+    PCMSK0 |= 1<<PCINT4;
+    PCICR |= 1<<PCIE0;
+    sei();
+
+    //set up accelerometer
+    mma.begin();
+    mma.setRange(MMA8451_RANGE_2_G);
+    
+    //Set up LCD
+    lcd.begin(16,2);            // Set LCD for 16 columns, 2 lines
+    lcd.clear();                // Clear LCD and print intro
+    lcd.setCursor(0, 0);
+    lcd.print("Trip Time: ");
 }
 
 void loop() {
-  checkReedSwitch();
+  getCurrentSlope();    //get accelerometer reading
+  delay(1000);          //delay 1 second in between readings
 }
 
 /*********************************************************
  * ISR Functions
  *********************************************************/
+/********************************************
+ * Magnetic Reed Switch External Interrupt
+ * Pulses everytime wheel comes around
+ ********************************************/
+void reedSwitchISR(){
+    pulseCount++;
+    pulseCount2++;
+    timeElapsed = millis() - previousTime;
+    previousTime = millis();
+
+    getCurrentSpeed();
+    getTripDistance();
+}
+
+
+/********************************************
+ * Change State Button External Interrupt
+ * Change current state (bicycle function)
+ ********************************************/
 void changeState(){
     if(state == 4){
         state = 0;
@@ -89,91 +156,119 @@ void changeState(){
     else{
         state++;
     }
+    writeToLCD();   //update state change on LCD
 }
 
-void resetAllValues(){
+/*******************************
+ * Reset Button PC Interrupt
+ * Reset all values on bike
+ * computer
+ *******************************/
+ISR(PCINT0_vect) {
     currentSpeed = 0.0;
     averageSpeed = 0.0;
     tripDistance = 0.0;
-    tripTime = 0.0;
+    tripSeconds = 0;
+    tripMinutes = 0;
+    tripHours = 0;
     currentSlope = 0.0;
+    totalSeconds = 0;
+    pulseCount = 0;
+    pulseCount2 = 0;
+
+    writeToLCD();
 }
-/*********************************************************
- * Reed Switch
- *********************************************************/
-void checkReedSwitch(){
-    int reedState = digitalRead(reedSwitch);
-    if(reedState == HIGH){
-        pulseCount++;
-        timeElapsed = millis() - previousTime;
-        previousTime = millis();
+
+
+/*******************************
+ * Timer Overflow Interrupt
+ *******************************/
+void timer_ISR(){
+    
+    totalSeconds++;                 //keeps track of total seconds used for average speed
+    getAverageSpeed();              //update average speed
+    if(timeCheck == previousTime){  //if speed is not changing
+        currentSpeed = 0;
+    }
+    timeCheck = previousTime;
+
+    if(cadenceCount == 3){
+        cadence = 20*pulseCount2;   //update cadence every 3 seconds
+        cadenceCount = 0;
+        pulseCount2 = 0;
+    }
+    else{
+        cadenceCount++;
     }
     
-    getCurrentSpeed();
-    getAverageSpeed();
-    getTripDistance();
-    getCurrentCadence();
-    getCurrentSlope(); 
+    writeToLCD();   //write all updates to LCD
+
+    //update timer
+    if(tripSeconds != 59){
+        tripSeconds++;
+    }
+    else{
+        tripSeconds = 0;
+        
+        if(tripMinutes == 59){
+           tripMinutes = 0;
+           tripHours++;
+        }
+        else{
+            tripMinutes++;
+        }
+    }      
 }
 
 /******************************************
  * Write To LCD Screen
  ******************************************/
 void writeToLCD(){
-    
+
+    //Print the trip time (always on first line of LCD)
     lcd.clear();
-    lcd.setCursor(1, 0);
-    lcd.print("Trip Time: ");
-   
+    lcd.setCursor(0, 0);
+    char times[9];
+    sprintf(times, "%02d:%02d:%02d", tripHours, tripMinutes, tripSeconds);
+    lcd.print(times);
+
+    //Print the selected function based on state
     if(state == 0){
-        lcd.setCursor(1, 1);
+        lcd.setCursor(0, 1);
         lcd.print("Speed: ");
-        lcd.setCursor(8, 1);
-        lcd.print(currentSpeed, 10);
-        //lcd.setCursor(10, 1);
-        //lcd.print(" mph");
+        lcd.print(currentSpeed);
+        lcd.print(" mph");
     }
     else if(state == 1){
-        lcd.setCursor(1, 1);
-        lcd.print("Avg Speed: ");
-        lcd.setCursor(12, 1);
-        lcd.print(averageSpeed, 10);
-        //lcd.setCursor(14, 1);
-        //lcd.print("mph");
+        lcd.setCursor(0, 1);
+        lcd.print("Avg S: ");
+        lcd.print(averageSpeed);
+        lcd.print(" mph");
     }
     else if(state == 2){     
-        lcd.setCursor(1, 1);
-        lcd.print("Distance: ");
-        lcd.setCursor(11, 1);
-        lcd.print(tripDistance, 10);
-        //lcd.print(" mi");
+        lcd.setCursor(0, 1);
+        lcd.print("Dist: ");
+        lcd.print(tripDistance);
+        lcd.print(" mi");
     }
     else if(state == 3){
-        lcd.setCursor(1, 1);
+        lcd.setCursor(0, 1);
         lcd.print("Cadence: ");
-        lcd.setCursor(10, 1);
-        lcd.print(cadence, 10);
-        //lcd.setCursor(13, 1);
-        //lcd.print(" RPM");
+        lcd.print(cadence);
+        lcd.print(" RPM");
     }
     else{
-        lcd.setCursor(1, 1);
+        lcd.setCursor(0, 1);
         lcd.print("Slope: ");
         lcd.print(currentSlope);
-        lcd.print(" deg");
+        lcd.print("%");
     }
 }
 
-/******************************************
- * Total Trip Time
- ******************************************/
-void getTripTime(){
-  
-}
 
-/******************************************
+/************************************************************
  * Bike Functions
- ******************************************/
+ ************************************************************/
 
 /******************************************
  * Computes Current Speed Of Bike
@@ -181,13 +276,8 @@ void getTripTime(){
  * Status: Complete
  ******************************************/
 void getCurrentSpeed(){
-    
     currentSpeed = wheelCircumference/timeElapsed;
     currentSpeed = currentSpeed * 681.8181;
-    
-    if(state == 0){
-          writeToLCD();
-    }
 }
 
 
@@ -197,12 +287,18 @@ void getCurrentSpeed(){
  * Status: COMPLETE
  ******************************************/
 void getAverageSpeed(){
-    averageSpeed = ((averageSpeed * pulseCount) + currentSpeed)/(pulseCount + 1);
-    if(state == 1){
-          writeToLCD();
-    }
-}
+  
+  double temp = ((totalSeconds*1000)/3600);
 
+  if(totalSeconds > 0){
+    averageSpeed = tripDistance/temp;
+    averageSpeed = averageSpeed*1000;
+  }
+  else{
+    averageSpeed = 0;
+  }
+    
+}
 
 /******************************************
  * Computes Total Trip Distance
@@ -211,10 +307,6 @@ void getAverageSpeed(){
  ******************************************/
 void getTripDistance(){
     tripDistance = (wheelCircumference * pulseCount)/5280;
-    
-    if(state == 2){
-        writeToLCD();
-    }
 }
 
 /******************************************
@@ -224,10 +316,6 @@ void getTripDistance(){
  ******************************************/
 void getCurrentCadence(){
     cadence = 60*(1000/timeElapsed);
-     
-    if(state == 3){
-          writeToLCD();
-    }
 }
 
 /******************************************
@@ -236,21 +324,13 @@ void getCurrentCadence(){
  * Status: NOT Complete
  ******************************************/
 void getCurrentSlope(){
-    
-    if(state == 4){
-          writeToLCD();
-    }
+    float tempSlope;
+    mma.read();
+    sensors_event_t event; 
+    mma.getEvent(&event);
+    tempSlope = acos(event.acceleration.z/9.8);
+    currentSlope = tan(tempSlope)*100;
 }
-
-
-
-
-
-
-
-
-
-
 
 
 

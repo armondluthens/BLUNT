@@ -10,8 +10,8 @@
 
 // Global Variables
 
-    LiquidCrystal lcd(6, 5, 1, 2, 3, 4);
-
+    //LiquidCrystal lcd(6, 5, 1, 2, 3, 4);
+LiquidCrystal lcd(9, 8, 4, 5, 6, 7);
 void setup() {
 
 // Serial Setup (Debugging only)
